@@ -1,0 +1,470 @@
+---
+title: "Google forms, data collection and feedback"
+author: "Simon Wellesley-Miller"
+date: "10/08/2021"
+output: html_document
+---
+
+```{r setup, message=FALSE, warning=FALSE,include=FALSE}
+knitr::opts_chunk$set(message=FALSE, warning=FALSE, echo = FALSE)
+
+
+library(googlesheets4)
+library(tm)
+library(SnowballC)
+library(wordcloud2)
+library(RColorBrewer)
+library(tidyverse)
+library(tidygeocoder)
+library(leaflet)
+library(widgetframe)
+library(readr)
+library(tidyr)
+library(Hmisc)
+library(plyr)
+library(RColorBrewer)
+library(reshape2)
+library(sentimentr)
+library(treemap)
+library(plotly)
+
+# these simple two lines is what it takes to read the data from Google forms
+
+
+## short URL for survey 
+
+#######################################
+# https://forms.gle/XWnGhTZhUcTqstau9 #
+#######################################
+
+url <- "https://docs.google.com/spreadsheets/d/1G7KY8N6FatXRHE7ld_J-hgdWc1bHgkEpWdahzzopD-M/edit?resourcekey#gid=468139587"
+
+data<- read_sheet (url)
+
+##############################################
+# create map of puppies, kittens and dragons #
+##############################################
+
+## creates a basic data frame with some teams and postcodes
+
+# dummy test data - the mapping throws a wobble if there are no items in a category so have
+# added this dummy data for me. It is me and I like puppies, kittens and dragons so it is
+# not strictly cheating
+label <- c('Puppies',  'Kittens', 'Dragons')
+postcode <- c('EX2 9BA', 'EX2 9BA', 'EX2 9BA')
+
+postcode_f <- data$`What is your postcode?  (Will be used to put a pin in a map visual)  Please use XXNN NXX format.  eg TA12 7BU, EX1 6TY, PL11 7WE`
+
+label_f <- data$`Puppies, Kittens or Dragons?`
+
+df1 <- data.frame(label,postcode)
+df <-data.frame(label_f, postcode_f)
+
+names(df)[1]<- 'label'
+names(df)[2]<- 'postcode'
+
+# join dummy data to real data
+df <- rbind(df, df1)
+
+## This is the magic bit that uses the tidygeocoder package to find longitudes and latitudes
+df <- df %>% dplyr::mutate( geo(address = df$postcode, method = 'osm'))
+
+## Filters cohort into three lists, one for each icon set
+cohort_filter1 <- df %>%
+  filter(df$label == "Kittens")
+cohort_filter2 <- df %>%
+  filter(df$label == "Puppies")
+cohort_filter3 <- df %>%
+  filter(df$label == "Dragons")
+
+# create some custom icons to overlay map
+# I downloaded a puppy, kitten and dragon icon onto my computer
+# I think you can link to files direct
+
+puppy <- makeIcon(
+iconUrl = "c://R_Files/puppy.png", #  eg  https://icon-library.com/images/puppy-icon-png/puppy-icon-png-1.jpg
+iconWidth = 30, iconHeight = 30,
+iconAnchorX = 0, iconAnchorY = 0)
+
+kitten <- makeIcon(
+iconUrl = "c://R_Files/kitten.png",
+iconWidth = 30, iconHeight = 30,
+iconAnchorX = 0, iconAnchorY = 0)
+
+dragon <- makeIcon(
+iconUrl = "c://R_Files/dragon.png",
+iconWidth = 30, iconHeight = 30,
+iconAnchorX = 0, iconAnchorY = 0)
+
+# this bit creates the map
+map <- leaflet(df) %>%
+  addTiles() %>%
+  addProviderTiles(providers$OpenStreetMap) %>%
+  addMarkers( lng = cohort_filter1$long,
+                     lat = cohort_filter1$lat,
+                     group = "Kittens",
+                     icon = kitten,
+                     label = paste(sep = " - ",
+                                   cohort_filter1$label ) ) %>%
+  addMarkers( lng = cohort_filter2$long,
+                     lat = cohort_filter2$lat,
+                     group = "Puppies",
+                     icon = puppy,
+                     label = paste(sep = " - ",
+                                   cohort_filter2$label ) ) %>%
+  addMarkers( lng = cohort_filter3$long,
+                     lat = cohort_filter3$lat,
+                     group = "Dragons",
+                     icon = dragon,
+                     label = paste(sep = " - ",
+                                   cohort_filter3$label ) ) %>%
+  addLayersControl(overlayGroups = c("Kittens", "Puppies", "Dragons"),    ##this bit adds the controls
+    options = layersControlOptions(collapsed = FALSE) )
+
+############################
+# text analysis of 3 words #
+############################
+
+# read in text
+txt <- data$`Looking back over the last 12 months, what THREE WORDS best describe how do you feel?`
+
+##converts the file into a corpus (vector file for text mining)
+docs <- Corpus(VectorSource(txt))
+
+## removes spaces and odd characters
+toSpace <- content_transformer(function (x , pattern ) gsub(pattern, " ", x))
+docs <- tm_map(docs, toSpace, "/")
+docs <- tm_map(docs, toSpace, "@")
+docs <- tm_map(docs, toSpace, "\\|")
+docs <- tm_map(docs, toSpace, "'")
+docs <- tm_map(docs, toSpace, "`")
+# Remove punctuation
+docs <- tm_map(docs, removePunctuation)
+# Convert the text to lower case
+docs <- tm_map(docs, content_transformer(tolower))
+# Remove numbers
+docs <- tm_map(docs, removeNumbers)
+# Remove English common stop words
+docs <- tm_map(docs, removeWords, stopwords("english"))
+# specify your stop words as a character vector - in this instance it was picking up some of the copyright notice
+docs <- tm_map(docs, removeWords, c("project", "license", "copyright","gutenberg","electronic","agreement","gutenbergtm")) 
+# Eliminate extra white spaces
+docs <- tm_map(docs, stripWhitespace)
+#it was still bringing back some quotation marks and so this finally removes what is left
+removeSpecialChars <- function(x) gsub("[^a-zA-Z0-9 ]","",x)
+docs <- tm_map(docs, content_transformer(removeSpecialChars))
+
+# this bit sorts and ranks the word frequencies and plonks into the data frame 'd'
+dtm <- TermDocumentMatrix(docs)
+m <- as.matrix(dtm)
+v <- sort(rowSums(m),decreasing=TRUE)
+d <- data.frame(word = names(v),freq=v)
+
+
+# create a bar plot of 10 most common words
+d <- d %>% 
+  arrange(desc(freq)) %>% 
+  head (10)
+
+# create the plot
+plot_past <- ggplot(data = d, 
+                    aes(x=freq, 
+                        y=reorder(word, 
+                                  freq), 
+                        fill = freq))+ 
+        geom_bar(stat = "identity") + 
+        theme_minimal() + 
+        labs(y= 'Word',
+             x= 'Frequency')
+
+##############
+# word cloud #
+##############
+
+# does the same again but prepares for word cloud
+txt <- data$`What THREE WORDS best describe this catch up?`
+
+##converts the file into a corpus (vector file for text mining)
+docs <- Corpus(VectorSource(txt))
+
+## removes spaces as and odd characters
+toSpace <- content_transformer(function (x , pattern ) gsub(pattern, " ", x))
+docs <- tm_map(docs, 
+               toSpace, "/")
+docs <- tm_map(docs, 
+               toSpace, "@")
+docs <- tm_map(docs, 
+               toSpace, "\\|")
+docs <- tm_map(docs, 
+               toSpace, "'")
+docs <- tm_map(docs, 
+               toSpace, "`")
+
+# Remove punctuation
+docs <- tm_map(docs, 
+               removePunctuation)
+
+# Convert the text to lower case
+docs <- tm_map(docs, 
+               content_transformer(tolower))
+
+# Remove numbers
+docs <- tm_map(docs, 
+               removeNumbers)
+# Remove English common stop words
+
+docs <- tm_map(docs, 
+               removeWords, 
+               stopwords("english"))
+
+# specify your stop words as a character vector - in this instance it was picking up some of the copyright notice
+docs <- tm_map(docs, 
+               removeWords, c("project", 
+                              "license", 
+                              "copyright",
+                              "gutenberg",
+                              "electronic",
+                              "agreement",
+                              "gutenbergtm")) 
+
+# Eliminate extra white spaces
+docs <- tm_map(docs, 
+               stripWhitespace)
+
+#it was still bringing back some quotation marks and so this finally removes what is left
+removeSpecialChars <- function(x) gsub("[^a-zA-Z0-9 ]","",x)
+docs <- tm_map(docs, content_transformer(removeSpecialChars))
+
+# this bit sorts and ranks the word frequencies and plonks into the data frame 'd'
+dtm <- TermDocumentMatrix(docs)
+m <- as.matrix(dtm)
+v <- sort(rowSums(m),decreasing=TRUE)
+z <- data.frame(word = names(v),freq=v)
+
+###########################
+# Box plots for responses #
+###########################
+
+# wrangle data format
+data_wide <- data %>% 
+  pivot_longer(cols = c(`Plop the Dots - SPCs in R`,
+                        `Vaccine modelling`,
+                        `General chat`))  %>% 
+  select(name,
+         value)
+
+# add on count
+data_wide <- data_wide %>% 
+  left_join((data_wide %>% 
+               group_by(name, value) %>% 
+               dplyr::summarise(num = n())), 
+            on = c(name,
+                   value))
+
+# create box plot with point plot
+bp <- ggplot(data_wide, 
+             aes(x = name, 
+                 y = value, 
+                 color = name)) + 
+  geom_boxplot() +
+  geom_point(aes(x = name, 
+                 y = value, 
+                 size = num))+
+  theme_minimal() +
+  theme(legend.position="none", 
+        axis.title.y = element_blank()) +
+  coord_flip() +
+  ylab("Rating: 1 poor - 5 great") +
+  xlab("Question") +
+  ggtitle("Responses")
+
+################
+# tree diagram #
+################
+
+data_tree <- data %>% 
+  group_by(`Would you consider presenting a piece of work at a future Ketchup?`) %>% 
+  dplyr::summarise(Answer = n())
+
+names(data_tree)[1]<- "present"
+
+############################
+# sentiment analysis chart #
+############################
+
+# very quick use of sentimentr to caluclate sentiments
+sentiment_past=sentiment_by(data$`Looking back over the last 12 months, what THREE WORDS best describe how do you feel?`)
+sentiment_ketch=sentiment_by(data$`What THREE WORDS best describe this catch up?`)
+
+# create a sentiment density plot with average sentiments
+sent <- ggplot(data = sentiment_past, 
+               aes(x = ave_sentiment), 
+               color = "blue") + 
+  geom_density(color = "blue", 
+               fill="lightblue", 
+               alpha = 0.2) + 
+  geom_vline(aes(xintercept=mean(ave_sentiment)), 
+             color="blue", 
+             linetype="dashed", 
+             size=1) + 
+  geom_density(data = sentiment_ketch, 
+               aes(x = ave_sentiment), 
+               color = "red", 
+               fill="orange", 
+               alpha = 0.2) + 
+  geom_vline(data = sentiment_ketch,
+             aes(xintercept=mean(ave_sentiment)),
+             color="red", 
+             linetype="dashed", 
+             size=1) + 
+  theme_minimal() +
+  ggtitle("Sentiment analysis:  Blue prev 12 months -/- Red APHA ketchup ")        
+
+###############################################
+# 3d interactive plot of 3 feedback questions #
+###############################################
+
+fig <- plot_ly(data, 
+               x = ~`General chat`, 
+               y = ~`Plop the Dots - SPCs in R`, 
+               z = ~`Vaccine modelling`,
+               marker = list(color = ~`Puppies, Kittens or Dragons?`, 
+                             colorscale = c('#FFE1A1', 
+                                            '#683531'), 
+                             showscale = FALSE)
+               )
+fig <- fig %>% add_markers()
+fig <- fig %>% layout(scene = list(xaxis = list(title = 'General Chat'),
+                                   yaxis = list(title = 'Plop the dots'),
+                                   zaxis = list(title = 'Vaccine modelling')) ,
+                      annotations = list(
+                        x = 1.13,
+                        y = 1.05,
+                        text = 'Scores',
+                        xref = 'paper',
+                        yref = 'paper',
+                        showarrow = FALSE
+                        ))
+
+
+
+
+
+```
+
+# Using R to read from google forms
+
+### Instructions
+
+Create a Google form
+
+Sign up to google and sign in.
+
+Then go to https://www.google.co.uk/forms/about/ where you can start making a form.  The functionality is pretty straight forward, you can select various type of questions, multiple choice, check boxes, ratings and free text.
+
+It allows you to add in pictures and generally make the form quite pretty.
+
+Remember all the form data is still stored in a Google form and so must not be used for clinical data and need to check with your local information governance what other type of data can or should be collected via this method.
+
+Once your form is designed and looking pretty you can send it out for completion.
+
+Also click on the responses tab and click on the little icon that is green with a white cross and create new spreadsheet.
+
+This can be set to only be accessed by your Google account if you have your computer logged in to a Google account or you have have it open to anyone.
+
+Wait for some responses...
+
+Connect up and collect the data
+
+Super easy and use package 'googlesheets4' that makes it easy to read in the Google sheet where the data is held.
+
+Go to your form and click on responses and go to the sheet where the data is held.  You need to copy that URL and simply paste it into the 'read_sheets' function of googlesheets4.
+
+Basically it just comes in as a data frame and then you can do what ever you like with it, such as run some analysis or save results into your data warehouse.
+
+Some examples of results.
+
+### Summary stats
+
+There were `r nrow(data) ` respondents.  
+
+The first response was completed at `r min(data$Timestamp)`
+
+The last response was completed at `r max(data$Timestamp)`
+
+Time difference of `r max(data$Timestamp) - min(data$Timestamp)` hours between first and last. 
+
+### Present in future
+
+*100%* of respondents said that in some way they would consider presenting a piece of work at a future event.  
+
+> (May need to double check on question bias.)  
+
+The breakdown is as follows :-
+
+```{r}
+treemap(data_tree, index=c("present"),vSize="Answer")
+```
+
+### Feedback results
+
+Looking at the feedback results of the sections they look like this.
+
+```{r}
+ggplotly(bp)
+```
+
+### Where are the kittens?
+
+To answer the question that everyone wants to know, have used postcode to plot points on map and added icon based on your puppy, kitten, dragon choice.
+
+
+```{r}
+map
+```
+
+### 12 mth Feelings
+
+Looking at the 10 most popular words input, these are the most popular feelings over the last 12 months.
+
+```{r}
+ggplotly(plot_past)
+
+```
+
+### Describe Ketchup
+
+Rather than just counting words - have put them into a word cloud.
+
+```{r}
+
+wordcloud2(z, color = "random-light", backgroundColor = "white")
+
+```
+### Sentiment
+
+Also done a very quick piece of sentiment analysis.  Comparing sentiment of words over the last 12 months to the sentiments of words to describe the ketchup.
+
+```{r}
+ggplotly (sent)
+```
+
+### Feedback results 3d
+
+And finally plot each of the 3 feedback items on an interactive 3d spinning graph.  Each data point is a triangulation of the 3 feedback scores plotting across each dimension. 
+
+```{r}
+
+
+fig
+
+```
+
+
+
+> Simon Wellesley-Miller
+> 10 August 2021
+
+
+
+
